@@ -50,6 +50,11 @@ async def test_import_preserves_ids_scope_lifetime_paths_and_source(tmp_path):
         return_value=received,
     ):
         group = await old.group_cache.put(str(path), "p", "group", "")
+    # Exercise real pre-animation-metadata source schemas, not the current schema.
+    with sqlite3.connect(old.storage.database_path) as db:
+        db.execute("ALTER TABLE context_images DROP COLUMN is_animated")
+    with sqlite3.connect(old.group_cache.root / "index.sqlite3") as db:
+        db.execute("ALTER TABLE images DROP COLUMN is_animated")
     manager, storage, _ = await build_manager(tmp_path / "new")
     counts = await import_legacy_images(
         storage, manager.root, manager.group_cache, legacy
@@ -57,6 +62,7 @@ async def test_import_preserves_ids_scope_lifetime_paths_and_source(tmp_path):
     assert counts == {"images": 1, "group_images": 1, "missing": 0}
     record = (await storage.list_context_images())[0]
     assert record["image_ref"] == first["image_ref"]
+    assert record["is_animated"] == 0
     assert record["created_at"] == received
     assert record["conversation_id"] == "c1"
     assert Path(record["path"]).parent == manager.root
@@ -75,6 +81,7 @@ async def test_import_preserves_ids_scope_lifetime_paths_and_source(tmp_path):
     )
     with sqlite3.connect(manager.group_cache.root / "index.sqlite3") as db:
         expiry = db.execute("SELECT expires_at FROM images").fetchone()[0]
+        assert db.execute("SELECT is_animated FROM images").fetchone()[0] == 0
     assert expiry == received + 86400
     # A completed import must not resurrect data later evicted by the new owner.
     with sqlite3.connect(storage.database_path) as db:

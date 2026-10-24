@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .image_metadata import detect_animation
+
 
 class Storage:
     """Own image indexes independently of QQ actions, audits and confirmations."""
@@ -36,7 +38,8 @@ class Storage:
                         size_bytes INTEGER NOT NULL,
                         created_at INTEGER NOT NULL,
                         last_accessed_at INTEGER NOT NULL,
-                        orphaned_at INTEGER
+                        orphaned_at INTEGER,
+                        is_animated INTEGER
                     );
                     CREATE INDEX IF NOT EXISTS idx_context_images_scope
                         ON context_images(
@@ -47,8 +50,43 @@ class Storage:
                     CREATE INDEX IF NOT EXISTS idx_context_images_created
                         ON context_images(created_at);
                 """)
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(context_images)")
+                }
+                if "is_animated" not in columns:
+                    connection.execute(
+                        "ALTER TABLE context_images ADD COLUMN is_animated INTEGER"
+                    )
 
         await asyncio.to_thread(initialize_sync)
+
+    async def backfill_image_animation(self, image_root: Path):
+        """Fill missing metadata for owned legacy images without changing lifetimes."""
+        root = image_root.resolve()
+
+        def backfill():
+            with sqlite3.connect(self.database_path, timeout=10) as connection:
+                rows = connection.execute(
+                    "SELECT image_ref, path FROM context_images WHERE is_animated IS NULL"
+                ).fetchall()
+                for image_ref, filename in rows:
+                    path = Path(filename).resolve()
+                    if not path.is_relative_to(root) or not path.is_file():
+                        continue
+                    state = detect_animation(path)
+                    if state is not None:
+                        connection.execute(
+                            "UPDATE context_images SET is_animated=? WHERE image_ref=? AND is_animated IS NULL",
+                            (state, image_ref),
+                        )
+
+        task = asyncio.create_task(asyncio.to_thread(backfill))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
 
     async def add_context_images(
         self,
@@ -111,8 +149,8 @@ class Storage:
                     INSERT INTO context_images (
                         image_ref, platform_id, unified_msg_origin,
                         conversation_id, path, mime_type, width, height,
-                        size_bytes, created_at, last_accessed_at, orphaned_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        size_bytes, created_at, last_accessed_at, orphaned_at, is_animated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                     """,
                     [
                         (
@@ -127,6 +165,7 @@ class Storage:
                             record["size_bytes"],
                             record["created_at"],
                             record["last_accessed_at"],
+                            record.get("is_animated"),
                         )
                         for record in records
                     ],

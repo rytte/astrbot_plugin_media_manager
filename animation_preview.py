@@ -36,7 +36,9 @@ def render_animation_preview(payload: bytes) -> AnimationPreview:
 
     with Image.open(io.BytesIO(payload)) as image:
         if image.format not in {"GIF", "WEBP", "PNG"}:
-            raise AnimationPreviewError("该图片不是支持的动图，请使用 inspect 查看原图")
+            raise AnimationPreviewError(
+                "该图片不是支持的动图，请使用 media_inspect 的 original 查看原图"
+            )
         first = 1 if image.info.get("default_image") else 0
         starts: list[float] = []
         elapsed = 0.0
@@ -69,7 +71,7 @@ def render_animation_preview(payload: bytes) -> AnimationPreview:
         count = len(starts)
         if count < 2:
             raise AnimationPreviewError(
-                "该图片未包含多个动画帧，请使用 inspect 查看原图"
+                "该图片未包含多个动画帧，请使用 media_inspect 的 original 查看原图"
             )
 
         sample_count = min(9, count)

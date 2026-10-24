@@ -19,6 +19,7 @@ from astrbot.core.agent.message import ImageURLPart, TextPart
 from astrbot.core.utils.media_utils import MediaResolver
 
 from .animation_preview import AnimationPreviewError, render_animation_preview
+from .image_metadata import detect_animation
 from .image_links import image_occurrences, ensure_image_links, new_image_id
 from .storage import Storage
 from .group_image_cache import (
@@ -188,6 +189,10 @@ class ContextImageManager:
         self, record: dict[str, Any], image_id: str | None = None
     ) -> str:
         link = f"image_id={image_id}；" if image_id else ""
+        is_animated = record.get("is_animated")
+        kind = (
+            "动静态未知" if is_animated is None else ("动图" if is_animated else "静图")
+        )
         cache_note = (
             "群聊短期缓存，可能过期或被淘汰；"
             if record["image_ref"].startswith("gimg_")
@@ -198,13 +203,13 @@ class ContextImageManager:
             entries.append(
                 f'原图可通过 media_inspect(image_ref="{record["image_ref"]}", view="original") 查看'
             )
-        if "animation" not in self.disabled_views:
+        if is_animated and "animation" not in self.disabled_views:
             entries.append(
                 f'GIF、WebP、APNG 动图可用 media_inspect(image_ref="{record["image_ref"]}", view="animation") 查看抽帧预览'
             )
         return (
             f"[Media ImageRef image_ref={record['image_ref']}, "
-            f"{record['width']}x{record['height']}；{link}{cache_note}"
+            f"{record['width']}x{record['height']}；{kind}；{link}{cache_note}"
             + "；".join(entries)
             + "]"
         )
@@ -289,6 +294,7 @@ class ContextImageManager:
                     created_paths.append(destination)
                     await asyncio.to_thread(shutil.copyfile, source_path, destination)
                     size_bytes = destination.stat().st_size
+                    is_animated = await asyncio.to_thread(detect_animation, destination)
                 records.append(
                     {
                         "image_ref": image_ref,
@@ -297,6 +303,7 @@ class ContextImageManager:
                         "conversation_id": conversation_id,
                         "path": destination,
                         "mime_type": mime_type,
+                        "is_animated": is_animated,
                         "width": width,
                         "height": height,
                         "size_bytes": size_bytes,

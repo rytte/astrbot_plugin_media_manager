@@ -14,6 +14,8 @@ from PIL import Image as PillowImage
 
 from astrbot.core.utils.media_utils import file_uri_to_path, is_file_uri
 
+from .image_metadata import detect_animation
+
 GROUP_IMAGE_REF_PATTERN = re.compile(r"gimg_[0-9a-f]{24}")
 GROUP_IMAGES_EXTRA = "_media_manager_group_images"
 
@@ -65,9 +67,13 @@ class GroupImageCache:
                         width INTEGER NOT NULL,
                         height INTEGER NOT NULL,
                         received_at REAL NOT NULL,
-                        expires_at REAL NOT NULL
+                        expires_at REAL NOT NULL,
+                        is_animated INTEGER
                     )"""
                 )
+                columns = {row[1] for row in db.execute("PRAGMA table_info(images)")}
+                if "is_animated" not in columns:
+                    db.execute("ALTER TABLE images ADD COLUMN is_animated INTEGER")
                 db.execute(
                     "CREATE INDEX IF NOT EXISTS images_scope ON images "
                     "(platform_id, origin, conversation_id, filename)"
@@ -81,6 +87,19 @@ class GroupImageCache:
                         if path.is_file() and path.name not in filenames:
                             path.unlink()
                 self._prune(db, time.time())
+                if not self._initialized:
+                    for row in db.execute(
+                        "SELECT DISTINCT filename FROM images WHERE is_animated IS NULL"
+                    ).fetchall():
+                        path = (self.root / row["filename"]).resolve()
+                        if not path.is_relative_to(self.root) or not path.is_file():
+                            continue
+                        state = detect_animation(path)
+                        if state is not None:
+                            db.execute(
+                                "UPDATE images SET is_animated=? WHERE filename=? AND is_animated IS NULL",
+                                (state, row["filename"]),
+                            )
                 db.commit()
                 self._initialized = True
                 return operation(db)
@@ -144,6 +163,7 @@ class GroupImageCache:
                 image.verify()
             if not mime_type.startswith("image/") or width <= 0 or height <= 0:
                 raise ValueError("invalid image")
+            is_animated = detect_animation(payload)
             filename = f"blob_{hashlib.sha256(payload).hexdigest()}"
             existing = db.execute(
                 "SELECT image_ref FROM images WHERE platform_id = ? AND origin = ? "
@@ -178,7 +198,9 @@ class GroupImageCache:
                 finally:
                     staging.unlink(missing_ok=True)
             db.execute(
-                "INSERT OR REPLACE INTO images VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO images (image_ref, platform_id, origin, conversation_id, "
+                "filename, size_bytes, mime_type, width, height, received_at, expires_at, is_animated) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     image_ref,
                     platform_id,
@@ -191,9 +213,15 @@ class GroupImageCache:
                     height,
                     now,
                     now + self.ttl_seconds,
+                    is_animated,
                 ),
             )
-            return {"image_ref": image_ref, "width": width, "height": height}
+            return {
+                "image_ref": image_ref,
+                "width": width,
+                "height": height,
+                "is_animated": is_animated,
+            }
 
         return await self._run(save)
 

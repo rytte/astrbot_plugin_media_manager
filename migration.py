@@ -14,6 +14,7 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .config import DEFAULT_CONFIG
+from .image_metadata import detect_animation
 
 MIGRATION_NAME = "qq_enhance_images_v1"
 
@@ -136,10 +137,11 @@ async def import_legacy_images(storage, image_root, group_cache, legacy_root):
                             target.execute(
                                 "INSERT INTO context_images ("
                                 + ",".join(keys)
-                                + ",path) VALUES ("
-                                + ",".join("?" for _ in range(12))
+                                + ",path,is_animated) VALUES ("
+                                + ",".join("?" for _ in range(13))
                                 + ")",
-                                tuple(row[key] for key in keys) + (str(path),),
+                                tuple(row[key] for key in keys)
+                                + (str(path), detect_animation(path)),
                             )
                             counts["images"] += 1
                 target.commit()
@@ -177,8 +179,30 @@ async def import_legacy_images(storage, image_root, group_cache, legacy_root):
                                     old_cache,
                                 )
                                 cache.execute(
-                                    "INSERT INTO images VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    tuple(row),
+                                    "INSERT INTO images (image_ref, platform_id, origin, conversation_id, "
+                                    "filename, size_bytes, mime_type, width, height, received_at, expires_at, is_animated) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    tuple(
+                                        row[key]
+                                        for key in (
+                                            "image_ref",
+                                            "platform_id",
+                                            "origin",
+                                            "conversation_id",
+                                            "filename",
+                                            "size_bytes",
+                                            "mime_type",
+                                            "width",
+                                            "height",
+                                            "received_at",
+                                            "expires_at",
+                                        )
+                                    )
+                                    + (
+                                        detect_animation(
+                                            group_cache.root / row["filename"]
+                                        ),
+                                    ),
                                 )
                                 counts["group_images"] += 1
             # No source yet: allow a later installation/import to discover it.
