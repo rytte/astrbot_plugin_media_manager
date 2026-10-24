@@ -1,5 +1,6 @@
 <div align="center">
 <img src="./logo.png" width="168" alt="Media 管理 Logo" />
+</div>
 
 # Media 管理
 
