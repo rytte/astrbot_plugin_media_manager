@@ -61,6 +61,9 @@ class Event:
     def get_platform_name(self) -> str:
         return "aiocqhttp"
 
+    def is_private_chat(self) -> bool:
+        return self.unified_msg_origin.split(":", 2)[1] == "FriendMessage"
+
     def get_extra(self, key: str, default=None):
         return self.extras.get(key, default)
 
@@ -254,10 +257,12 @@ async def test_bind_keeps_exact_image_sources_when_request_order_changes(tmp_pat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", ["draw_picture", "mcp__images__render"])
+@pytest.mark.parametrize("archive_enabled", [True, False])
 async def test_other_tool_images_are_archived_at_finish_without_losing_text(
-    tmp_path: Path, tool_name: str
+    tmp_path: Path, tool_name: str, archive_enabled: bool
 ) -> None:
     manager, storage, _ = await build_manager(tmp_path)
+    manager.archive_enabled = archive_enabled
     event = Event()
     await manager.prepare_request(
         event, ProviderRequest(conversation=SimpleNamespace(cid="conversation-a"))
@@ -302,6 +307,16 @@ async def test_other_tool_images_are_archived_at_finish_without_losing_text(
     await manager.finalize_images(event, run_context)
 
     records = await storage.list_context_images()
+    if not archive_enabled:
+        assert not records
+        assert all(not part._no_save for part in parts)
+        assert "data:image" in json.dumps(
+            dump_messages_with_checkpoints(run_context.messages)
+        )
+        assert tool.content == "\n\n".join(
+            ["生成说明", notices[0], "第二张的说明", notices[1], "末尾正文"]
+        )
+        return
     assert len(records) == 2
     assert tool.tool_call_id == "other-call"
     assert all(

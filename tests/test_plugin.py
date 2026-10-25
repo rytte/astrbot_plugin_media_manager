@@ -17,7 +17,11 @@ from astrbot.core.agent.message import (
     TextPart,
     dump_messages_with_checkpoints,
 )
-from astrbot_plugin_media_manager.config import DEFAULT_CONFIG, validate_config
+from astrbot_plugin_media_manager.config import (
+    DEFAULT_CONFIG,
+    group_config,
+    validate_config,
+)
 from astrbot_plugin_media_manager.context_images import ContextImageError
 from astrbot_plugin_media_manager.group_image_cache import GROUP_IMAGES_EXTRA
 from astrbot_plugin_media_manager.image_links import IMAGE_LINKS_EXTRA
@@ -31,6 +35,7 @@ async def make_plugin(tmp_path, config=None):
     plugin = object.__new__(MediaManagerPlugin)
     plugin.config = validate_config(config)
     plugin.images = manager
+    plugin.images.archive_enabled = plugin.config["image_lighten_enabled"]
     plugin.images.disabled_views = set(plugin.config["disabled_views"])
     plugin.storage = storage
     plugin.ready = True
@@ -45,8 +50,8 @@ async def make_plugin(tmp_path, config=None):
 
 
 @pytest.mark.asyncio
-async def test_all_images_receive_stable_ids_with_a_small_cache_limit(tmp_path):
-    plugin, _ = await make_plugin(tmp_path, {"max_components": 1})
+async def test_all_images_receive_stable_ids_beyond_the_cache_limit(tmp_path):
+    plugin, _ = await make_plugin(tmp_path)
     event = Event()
     event.message_obj.message = [
         Reply(id="old", chain=[Image(file="quoted.png")]),
@@ -60,29 +65,45 @@ async def test_all_images_receive_stable_ids_with_a_small_cache_limit(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_group_cache_limit_preserves_all_visual_input_and_references(tmp_path):
-    plugin, _ = await make_plugin(tmp_path, {"max_components": 1})
+@pytest.mark.parametrize("lighten_enabled", [True, False])
+async def test_group_cache_limit_preserves_all_visual_input_and_references(
+    tmp_path, monkeypatch, lighten_enabled
+):
+    plugin, _ = await make_plugin(
+        tmp_path,
+        {"image_lighten_enabled": lighten_enabled},
+    )
+    monkeypatch.setattr(
+        "astrbot.core.star.session_plugin_manager.SessionPluginManager.is_plugin_enabled_for_session",
+        AsyncMock(return_value=True),
+    )
     plugin.context.get_config = lambda **_: {
         "provider_ltm_settings": {"group_icl_enable": True}
     }
-    paths = [tmp_path / f"image-{index}.png" for index in range(3)]
+    paths = [tmp_path / f"image-{index}.png" for index in range(32)]
     for index, path in enumerate(paths):
         save_image(path, "PNG", (index + 3, 4))
-    event = Event()
+    event = Event(unified_msg_origin="platform-a:GroupMessage:group-a")
     event.get_group_id = lambda: "group-a"
     event.message_str = "查看这些图片"
     event.message_obj.message = [
-        Reply(id="old", chain=[Image(file=str(paths[2]))]),
+        Reply(id="old", chain=[Image(file=str(paths[-1]))]),
         *[Image(file=str(path)) for path in paths],
     ]
     await plugin.assign_image_ids(event)
     links = dict(event.get_extra(IMAGE_LINKS_EXTRA))
     await plugin.cache_group_images(event)
     cached = event.get_extra(GROUP_IMAGES_EXTRA)
-    assert len(cached) == 1
-    assert cached[0]["source"] == str(paths[2])  # Quoted images count in message order.
+    assert len(cached) == 30
+    assert (
+        [item["source"] for item in cached]
+        == [
+            str(paths[-1]),  # Quoted images count in message order.
+            *map(str, paths[:29]),
+        ]
+    )
     assert event.get_extra(IMAGE_LINKS_EXTRA) == links
-    visual_sources = [str(paths[2]), *map(str, paths)]
+    visual_sources = [str(paths[-1]), *map(str, paths)]
     request = ProviderRequest(
         prompt=event.message_str,
         conversation=SimpleNamespace(cid="c1"),
@@ -93,24 +114,99 @@ async def test_group_cache_limit_preserves_all_visual_input_and_references(tmp_p
     reference_text = "\n".join(
         [request.prompt, *[part.text for part in request.extra_user_content_parts]]
     )
-    for link in links.values():
-        assert reference_text.count(link) == 1
+    cached_sources = {item["source"] for item in cached}
+    for source, link in zip(visual_sources, links.values()):
+        assert reference_text.count(link) == int(
+            lighten_enabled or source in cached_sources
+        )
     current = Message.model_validate(await request.assemble_context())
     run_context = SimpleNamespace(messages=[current])
     await plugin.bind_image_refs(event, run_context)
     visuals = [part for part in current.content if isinstance(part, ImageURLPart)]
-    assert len(visuals) == 4
-    assert all(part.image_url.id and not part._no_save for part in visuals)
+    assert len(visuals) == 33
+    assert all(not part._no_save for part in visuals)
+    assert sum(bool(part.image_url.id) for part in visuals) == (
+        33 if lighten_enabled else 31
+    )
     await plugin.lighten_history(event, run_context, None)
     history = json.dumps(dump_messages_with_checkpoints([current]))
-    assert "data:image" not in history
-    assert all(link in history for link in links.values())
-    assert len(await plugin.storage.list_context_images()) == 2
+    assert ("data:image" not in history) is lighten_enabled
+    for source, link in zip(visual_sources, links.values()):
+        assert (link in history) == (lighten_enabled or source in cached_sources)
+    assert len(await plugin.storage.list_context_images()) == (
+        2 if lighten_enabled else 0
+    )
+    result = await plugin.media_inspect(event, cached[0]["image_ref"])
+    assert not result.isError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lighten_enabled", [True, False])
+@pytest.mark.parametrize("is_private", [True, False])
+async def test_lightening_switch_controls_private_and_uncached_group_images(
+    tmp_path, monkeypatch, lighten_enabled, is_private
+):
+    plugin, _ = await make_plugin(
+        tmp_path,
+        {"lightening": {"image_lighten_enabled": lighten_enabled}},
+    )
+    monkeypatch.setattr(
+        "astrbot.core.star.session_plugin_manager.SessionPluginManager.is_plugin_enabled_for_session",
+        AsyncMock(return_value=True),
+    )
+    path = tmp_path / "input.png"
+    save_image(path, "PNG", (4, 5))
+    origin = (
+        "platform-a:FriendMessage:10001"
+        if is_private
+        else "platform-a:GroupMessage:group-a"
+    )
+    event = Event(path, unified_msg_origin=origin)
+    request = ProviderRequest(
+        prompt="查看图片",
+        system_prompt="原始提示",
+        conversation=SimpleNamespace(cid="c1"),
+        image_urls=[str(path)],
+    )
+    request.func_tool = SimpleNamespace(remove_tool=Mock())
+    await plugin.assign_image_ids(event)
+    await plugin.prepare_images(event, request)
+    assert request.image_urls == [str(path)]
+    current = Message.model_validate(await request.assemble_context())
+    run_context = SimpleNamespace(messages=[current])
+    await plugin.bind_image_refs(event, run_context)
+    await plugin.lighten_history(event, run_context, None)
+    history = json.dumps(dump_messages_with_checkpoints([current]))
+    records = await plugin.storage.list_context_images()
+    if not lighten_enabled:
+        assert not records
+        assert request.prompt == "查看图片"
+        assert request.extra_user_content_parts == []
+        assert "data:image" in history
+        assert "Media ImageRef" not in history
+        if is_private:
+            assert not event.extras
+            assert request.system_prompt == "原始提示"
+            request.func_tool.remove_tool.assert_called_once_with("media_inspect")
+        else:
+            request.func_tool.remove_tool.assert_not_called()
+        result = await plugin.media_inspect(event, "img_" + "a" * 24)
+        assert result.isError
+        assert json.loads(result.content[0].text)["error"]["code"] == (
+            "capability_unavailable"
+        )
+    else:
+        assert len(records) == 1
+        assert "data:image" not in history
+        assert records[0]["image_ref"] in history
+        request.func_tool.remove_tool.assert_not_called()
+        result = await plugin.media_inspect(event, records[0]["image_ref"])
+        assert not result.isError
 
 
 @pytest.mark.asyncio
 async def test_failed_cache_attempts_still_respect_the_per_message_limit(tmp_path):
-    plugin, _ = await make_plugin(tmp_path, {"max_components": 2})
+    plugin, _ = await make_plugin(tmp_path)
     plugin.context.get_config = lambda **_: {
         "provider_ltm_settings": {"group_icl_enable": True}
     }
@@ -118,11 +214,11 @@ async def test_failed_cache_attempts_still_respect_the_per_message_limit(tmp_pat
     event = Event()
     event.get_group_id = lambda: "group-a"
     event.message_obj.message = [
-        Image(file=f"missing-{index}.png") for index in range(4)
+        Image(file=f"missing-{index}.png") for index in range(34)
     ]
     await plugin.cache_group_images(event)
-    assert plugin.images.group_cache.put.await_count == 2
-    assert len(event.get_extra(IMAGE_LINKS_EXTRA)) == 4
+    assert plugin.images.group_cache.put.await_count == 30
+    assert len(event.get_extra(IMAGE_LINKS_EXTRA)) == 34
     assert event.get_extra(GROUP_IMAGES_EXTRA) is None
 
 
@@ -275,7 +371,8 @@ async def test_lifecycle_reconciles_at_most_once_per_local_day(tmp_path):
     "config",
     [
         {"max_inspect_mb": 0},
-        {"enabled": 1},
+        {"lightening": {"image_lighten_enabled": 1}},
+        {"group_cache_enabled": 1},
         {"retention_days": False},
         {"disabled_views": ["video"]},
     ],
@@ -304,10 +401,13 @@ async def test_invalid_tool_values_return_structured_errors(tmp_path, image_ref,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "config", [{"enabled": False}, {"platform_ids": ["another-platform"]}]
+    "ready,config", [(False, {}), (True, {"platform_ids": ["another-platform"]})]
 )
-async def test_disabled_and_filtered_platforms_do_not_process_input(tmp_path, config):
+async def test_unready_and_filtered_platforms_do_not_process_input(
+    tmp_path, ready, config
+):
     plugin, _ = await make_plugin(tmp_path, config)
+    plugin.ready = ready
     event = Event(tmp_path / "missing.png")
     tools = SimpleNamespace(remove_tool=Mock())
     request = SimpleNamespace(func_tool=tools)
@@ -347,7 +447,9 @@ def test_schema_defaults_are_loadable_by_astrbot():
     path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
     schema = json.loads(path.read_text(encoding="utf-8"))
     loader = AstrBotConfig.__new__(AstrBotConfig)
-    assert loader._config_schema_to_default_config(schema) == DEFAULT_CONFIG
+    defaults = loader._config_schema_to_default_config(schema)
+    assert defaults == group_config()
+    assert validate_config(defaults) == DEFAULT_CONFIG
 
 
 class SavedConfig(dict):
@@ -381,7 +483,9 @@ async def test_real_initialization_imports_settings_once_and_stops_cleanup(
         encoding="utf-8",
     )
     context = SimpleNamespace(get_registered_star=lambda _: None)
-    config = SavedConfig({"max_storage_mb": 128})
+    config = SavedConfig(
+        group_config({"max_storage_mb": 128, "image_lighten_enabled": False})
+    )
     plugin = MediaManagerPlugin(context, config)
     try:
         await plugin.initialize()
@@ -389,6 +493,9 @@ async def test_real_initialization_imports_settings_once_and_stops_cleanup(
         assert plugin.images.retention_days == 7
         assert plugin.images.max_storage_bytes == 128 * 1024 * 1024
         assert not plugin.config["group_cache_enabled"]
+        assert not plugin.config["image_lighten_enabled"]
+        assert not plugin.images.archive_enabled
+        assert config == group_config(plugin.config)
         assert config.saves == 1
         await asyncio.sleep(0)
     finally:
@@ -398,7 +505,7 @@ async def test_real_initialization_imports_settings_once_and_stops_cleanup(
     legacy.write_text(
         json.dumps({"context_images": {"retention_days": 2}}), encoding="utf-8"
     )
-    config["retention_days"] = (
+    config["lightening"]["retention_days"] = (
         30  # A later explicit reset to default must remain intact.
     )
     reloaded = MediaManagerPlugin(context, config)

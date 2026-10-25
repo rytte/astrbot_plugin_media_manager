@@ -79,6 +79,7 @@ class ContextImageManager:
         max_storage_mb: Total storage budget for persistent context images.
         max_inspect_mb: Largest image that may be loaded into one tool result.
         group_cache: Bounded cache for images collected from group messages.
+        archive_enabled: Archive and lighten images outside the independent group cache.
     """
 
     def __init__(
@@ -91,6 +92,8 @@ class ContextImageManager:
         max_storage_mb: int,
         max_inspect_mb: int,
         group_cache: GroupImageCache,
+        *,
+        archive_enabled: bool = True,
     ) -> None:
         self.context = context
         self.storage = storage
@@ -100,6 +103,7 @@ class ContextImageManager:
         self.max_storage_bytes = max_storage_mb * 1024 * 1024
         self.max_inspect_bytes = max_inspect_mb * 1024 * 1024
         self.group_cache = group_cache
+        self.archive_enabled = archive_enabled
         self.disabled_views: set[str] = set()
         self.root.mkdir(parents=True, exist_ok=True)
 
@@ -164,8 +168,10 @@ class ContextImageManager:
             request_refs.append(record["image_ref"] if record else None)
         event.set_extra(REQUEST_IMAGE_REFS_EXTRA, request_refs)
         for part in request.extra_user_content_parts:
-            if isinstance(part, TextPart) and part.text.startswith(
-                CORE_IMAGE_ATTACHMENT_PREFIXES
+            if (
+                self.archive_enabled
+                and isinstance(part, TextPart)
+                and part.text.startswith(CORE_IMAGE_ATTACHMENT_PREFIXES)
             ):
                 part.mark_as_temp()
         references = [
@@ -218,7 +224,7 @@ class ContextImageManager:
         self, event: Any, conversation_id: str, sources: list[str]
     ) -> dict[str, dict[str, Any]]:
         """Validate and atomically archive one batch without modifying messages."""
-        if not sources:
+        if not self.archive_enabled or not sources:
             return {}
         if not conversation_id:
             raise ContextImageError(
@@ -452,6 +458,11 @@ class ContextImageManager:
                     "target_not_found", "群聊图片缓存已过期、被淘汰或不属于当前会话"
                 )
             return cached
+        if not self.archive_enabled:
+            raise ContextImageError(
+                "capability_unavailable",
+                "当前未启用对话图片轻量化，无法查看长期归档图片",
+            )
         record = await self.storage.resolve_context_image(
             image_ref,
             str(event.get_platform_id()),
@@ -480,6 +491,8 @@ class ContextImageManager:
         ``image_url.id``. Other images, including results from arbitrary tools,
         are archived as one batch before any of those payloads are filtered.
         Archive failures leave the unarchived images intact and raise an error.
+        When archiving is disabled, only images carrying group-cache references
+        are lightened; all other image payloads remain available for persistence.
         """
         self.clean_runtime_images(run_context)
         messages = getattr(run_context, "messages", [])
@@ -497,6 +510,13 @@ class ContextImageManager:
             for part in message.content:
                 if isinstance(part, ImageURLPart) and not part._no_save:
                     image_ref = part.image_url.id
+                    if not self.archive_enabled and not (
+                        image_ref
+                        and GROUP_IMAGE_REF_PATTERN.fullmatch(image_ref)
+                        and image_ref in text
+                    ):
+                        pending_marker = None
+                        continue
                     if not (
                         image_ref
                         and IMAGE_REF_PATTERN.fullmatch(image_ref)

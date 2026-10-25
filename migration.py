@@ -32,7 +32,6 @@ def legacy_settings(config_path: Path) -> dict:
     for group, old, new in (
         ("files", "max_base64_size_mb", "max_inspect_mb"),
         ("files", "cleanup_interval_seconds", "cleanup_interval_seconds"),
-        ("limits", "max_components", "max_components"),
     ):
         if old in data.get(group, {}):
             result[new] = data[group][old]

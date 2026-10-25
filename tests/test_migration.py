@@ -133,7 +133,7 @@ async def test_import_rejects_index_path_outside_old_root(tmp_path):
     assert await storage.list_context_images() == []
 
 
-def test_legacy_settings_preserve_disabled_limits_and_tool_restrictions(tmp_path):
+def test_legacy_settings_ignore_removed_options_and_preserve_limits_and_views(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(
         json.dumps(
@@ -148,10 +148,8 @@ def test_legacy_settings_preserve_disabled_limits_and_tool_restrictions(tmp_path
         encoding="utf-8",
     )
     assert legacy_settings(path) == {
-        "enabled": False,
         "retention_days": 0,
         "max_inspect_mb": 17,
-        "max_components": 5,
         "platform_ids": ["qq-a"],
         "disabled_views": ["animation"],
     }
