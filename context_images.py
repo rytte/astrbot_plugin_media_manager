@@ -38,10 +38,7 @@ CORE_IMAGE_ATTACHMENT_PREFIXES = (
     "[Image Attachment: path ",
     "[Image Attachment in quoted message: path ",
 )
-TOOL_IMAGE_PREFIXES = (
-    "[Image from tool 'media_inspect', path='",
-    "[Image from tool 'qq_media', path='",
-)
+TOOL_IMAGE_PREFIX = "[Image from tool 'media_inspect', path='"
 TOOL_IMAGE_ATTACHMENT_PATTERN = re.compile(
     r"\[Image from tool '(?P<tool>[^']+)', path='(?P<path>.*)'\]", re.DOTALL
 )
@@ -599,9 +596,7 @@ class ContextImageManager:
                     function = getattr(tool_call, "function", None)
                     name = getattr(function, "name", None)
                     arguments = getattr(function, "arguments", None)
-                if name not in {"media_inspect", "qq_media"} or not isinstance(
-                    tool_call_id, str
-                ):
+                if name != "media_inspect" or not isinstance(tool_call_id, str):
                     continue
                 try:
                     parsed = (
@@ -611,30 +606,16 @@ class ContextImageManager:
                     )
                 except json.JSONDecodeError:
                     continue
-                if name == "media_inspect" and isinstance(parsed, dict):
-                    view = parsed.get("view", "original")
-                    if not isinstance(view, str):
-                        continue
-                    parsed = {
-                        "operation": {
-                            "original": "inspect",
-                            "animation": "inspect_animation",
-                        }.get(view),
-                        "params": {"image_ref": parsed.get("image_ref")},
-                    }
-                if not isinstance(parsed, dict) or parsed.get("operation") not in {
-                    "inspect",
-                    "inspect_animation",
-                }:
+                if not isinstance(parsed, dict):
                     continue
-                params = parsed.get("params")
-                image_ref = (
-                    params.get("image_ref") if isinstance(params, dict) else None
-                )
+                view = parsed.get("view", "original")
+                if not isinstance(view, str) or view not in {"original", "animation"}:
+                    continue
+                image_ref = parsed.get("image_ref")
                 if isinstance(image_ref, str) and IMAGE_REF_PATTERN.fullmatch(
                     image_ref
                 ):
-                    inspect_calls[tool_call_id] = (image_ref, parsed["operation"])
+                    inspect_calls[tool_call_id] = (image_ref, view)
 
         for message in messages:
             if getattr(message, "role", None) == "tool":
@@ -645,8 +626,8 @@ class ContextImageManager:
                     and isinstance(content, str)
                     and ("Image returned and cached at path=" in content)
                 ):
-                    image_ref, operation = inspected
-                    if operation == "inspect_animation":
+                    image_ref, view = inspected
+                    if view == "animation":
                         # Keep objective sampling details, strip only AstrBot's
                         # temporary attachment/cache-path suffix.
                         message.content = content.split(
@@ -662,7 +643,7 @@ class ContextImageManager:
             pending_tool_image = False
             for part in message.content:
                 if isinstance(part, TextPart) and part.text.startswith(
-                    TOOL_IMAGE_PREFIXES
+                    TOOL_IMAGE_PREFIX
                 ):
                     part.mark_as_temp()
                     pending_tool_image = True

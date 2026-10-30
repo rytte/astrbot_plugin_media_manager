@@ -23,9 +23,6 @@ class Storage:
             with sqlite3.connect(self.database_path, timeout=10) as connection:
                 connection.executescript("""
                     PRAGMA journal_mode=WAL;
-                    CREATE TABLE IF NOT EXISTS migrations (
-                        name TEXT PRIMARY KEY, completed_at INTEGER NOT NULL
-                    );
                     CREATE TABLE IF NOT EXISTS context_images (
                         image_ref TEXT PRIMARY KEY,
                         platform_id TEXT NOT NULL,

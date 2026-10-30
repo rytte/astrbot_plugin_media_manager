@@ -17,11 +17,10 @@ DEFAULT_CONFIG = {
     "cleanup_interval_seconds": 600,
     "disabled_views": [],
     "platform_ids": [],
-    "import_qq_enhance": True,
 }
 
 CONFIG_GROUPS = {
-    "general": ("platform_ids", "import_qq_enhance"),
+    "general": ("platform_ids",),
     "lightening": (
         "image_lighten_enabled",
         "max_storage_mb",
@@ -63,11 +62,7 @@ def validate_config(config=None):
     if unknown:
         raise ValueError(f"未知 Media 管理配置：{', '.join(sorted(unknown))}")
     result = {**deepcopy(DEFAULT_CONFIG), **deepcopy(config)}
-    for key in (
-        "image_lighten_enabled",
-        "group_cache_enabled",
-        "import_qq_enhance",
-    ):
+    for key in ("image_lighten_enabled", "group_cache_enabled"):
         if type(result[key]) is not bool:
             raise ValueError(f"{key} 必须是布尔值")
     ranges = {
@@ -107,10 +102,14 @@ def migrate_config_file(path: Path) -> bool:
     config = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(config, dict):
         raise ValueError("Media 管理配置必须是配置对象")
-    retired_keys = {"enabled", "max_components"}
+    retired_keys = {"enabled", "max_components", "import_qq_enhance"}
     cache_config = config.get("group_cache")
     has_retired_cache_limit = (
         isinstance(cache_config, dict) and "max_components" in cache_config
+    )
+    general_config = config.get("general")
+    has_retired_import = (
+        isinstance(general_config, dict) and "import_qq_enhance" in general_config
     )
     legacy_keys = (
         set(DEFAULT_CONFIG)
@@ -118,12 +117,14 @@ def migrate_config_file(path: Path) -> bool:
         | set(LEGACY_CONFIG_GROUPS)
         | {"private_image_lighten_enabled"}
     )
-    if not (set(config) & legacy_keys or has_retired_cache_limit):
+    if not (set(config) & legacy_keys or has_retired_cache_limit or has_retired_import):
         return False
     for key in retired_keys:
         config.pop(key, None)
     if has_retired_cache_limit:
         cache_config.pop("max_components")
+    if has_retired_import:
+        general_config.pop("import_qq_enhance")
     grouped = group_config(config)
     staging = None
     try:

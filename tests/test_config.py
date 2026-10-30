@@ -27,10 +27,16 @@ def test_flat_config_migration_preserves_settings_when_loaded_by_astrbot(tmp_pat
         "cleanup_interval_seconds": 120,
         "disabled_views": ["animation"],
         "platform_ids": ["qq-a"],
-        "import_qq_enhance": False,
     }
     path.write_text(
-        json.dumps({**settings, "enabled": False, "max_components": 5}),
+        json.dumps(
+            {
+                **settings,
+                "enabled": False,
+                "max_components": 5,
+                "import_qq_enhance": False,
+            }
+        ),
         encoding="utf-8-sig",
     )
     assert migrate_config_file(path)
@@ -44,11 +50,17 @@ def test_flat_config_migration_preserves_settings_when_loaded_by_astrbot(tmp_pat
     assert path.read_bytes() == saved
 
 
-def test_grouped_config_removes_retired_cache_limit_and_preserves_settings(tmp_path):
+@pytest.mark.parametrize(
+    "section,option,value",
+    [("group_cache", "max_components", 5), ("general", "import_qq_enhance", True)],
+)
+def test_grouped_config_removes_retired_options_and_preserves_settings(
+    tmp_path, section, option, value
+):
     path = tmp_path / "media_config.json"
     expected = group_config({"group_cache_max_mb": 128, "retention_days": 7})
     previous = group_config(expected)
-    previous["group_cache"]["max_components"] = 5
+    previous[section][option] = value
     path.write_text(json.dumps(previous), encoding="utf-8")
     assert migrate_config_file(path)
     assert json.loads(path.read_text(encoding="utf-8")) == expected

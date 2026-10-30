@@ -256,7 +256,9 @@ async def test_bind_keeps_exact_image_sources_when_request_order_changes(tmp_pat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["draw_picture", "mcp__images__render"])
+@pytest.mark.parametrize(
+    "tool_name", ["draw_picture", "mcp__images__render", "qq_media"]
+)
 @pytest.mark.parametrize("archive_enabled", [True, False])
 async def test_other_tool_images_are_archived_at_finish_without_losing_text(
     tmp_path: Path, tool_name: str, archive_enabled: bool
@@ -414,9 +416,9 @@ async def test_failed_final_archive_keeps_unarchived_images_and_creates_no_false
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("prefix", ["img", "gimg"])
-@pytest.mark.parametrize("operation", ["inspect", "inspect_animation"])
+@pytest.mark.parametrize("view", ["original", "animation"])
 async def test_inspect_tool_images_and_cache_paths_are_not_persisted(
-    tmp_path: Path, prefix: str, operation: str
+    tmp_path: Path, prefix: str, view: str
 ) -> None:
     manager = ContextImageManager(
         SimpleNamespace(),
@@ -437,13 +439,8 @@ async def test_inspect_tool_images_and_cache_paths_are_not_persisted(
                 "type": "function",
                 "id": "call-1",
                 "function": {
-                    "name": "qq_media",
-                    "arguments": json.dumps(
-                        {
-                            "operation": operation,
-                            "params": {"image_ref": image_ref},
-                        }
-                    ),
+                    "name": "media_inspect",
+                    "arguments": json.dumps({"image_ref": image_ref, "view": view}),
                 },
             }
         ],
@@ -459,7 +456,9 @@ async def test_inspect_tool_images_and_cache_paths_are_not_persisted(
     tool_image = Message(
         role="user",
         content=[
-            TextPart(text="[Image from tool 'qq_media', path='C:\\temp\\tool.png']"),
+            TextPart(
+                text="[Image from tool 'media_inspect', path='C:\\temp\\tool.png']"
+            ),
             ImageURLPart(
                 image_url=ImageURLPart.ImageURL(
                     url="data:image/png;base64,cGljdHVyZQ=="
@@ -471,7 +470,7 @@ async def test_inspect_tool_images_and_cache_paths_are_not_persisted(
 
     await manager.finalize_images(Event(), SimpleNamespace(messages=messages))
 
-    if operation == "inspect":
+    if view == "original":
         assert tool.content == (
             f"已加载 image_ref={image_ref}，图片已在当时的推理轮次中提供。"
         )

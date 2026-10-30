@@ -1,7 +1,7 @@
 name: astrbot_plugin_media_manager
 display_name: Media 管理
 desc: 管理模型会话中的媒体资源，提供图片历史轻量化、回看原图、动图九宫格预览、群聊图片缓存及自动清理。
-version: 0.2.1
+version: 0.2.2
 author: rytte
 repo: https://github.com/rytte/astrbot_plugin_media_manager
 astrbot_version: ">=4.27,<5"

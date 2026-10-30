@@ -85,46 +85,9 @@ https://github.com/rytte/astrbot_plugin_media_manager
 
 动静态由 Media 管理根据实际动画帧检测，不依赖文件扩展名或 QQ 语义。单帧 GIF、WebP 和只有一帧实际动画的 APNG 按静图处理，APNG 封面不计入动画帧。检测失败时标为“动静态未知”；**只有确认的动图才附动画预览入口**，静图和未知图片仍可查看原图。
 
-## 🧩 QQ 插件配合与迁移说明
+## 🧩 图片 ID 协作
 
-Media 管理插件由 [QQ 能力增强](https://github.com/rytte/astrbot_plugin_qq_enhance) 拆分而来，可以独立运行。与 QQ 能力增强插件一起使用时，QQ 插件提供图片类型、摘要及动态表情语义，Media 管理负责图片归档、引用、回看和清理。
-
-### 独立标签，按图片关联
-
-两个插件分别生成标签，通过相同的 `image_id` 关联同一次图片出现：
-
-```text
-[QQ component|QQ动态表情包：出发啦；image_id=pic_0123456abcdef]
-[Media ImageRef image_ref=img_0123456abcdef, 320x240；动图；image_id=pic_0123456abcdef；查看入口…]
-```
-
-- 相同 `image_id` 表示同一次图片出现，模型应合并理解，不重复计数。
-- 所有图片都会分配关联标识，引用消息中的图片也单独关联；QQ 只在可靠匹配且语义预算允许时附上该标识。
-- `image_id` 用于标签关联，工具读取使用 `image_ref`。关闭 QQ 组件语义化后，媒体引用仍可独立使用。
-
-### 从 QQ 能力增强迁移
-
-> [!IMPORTANT]
-> **先将 QQ 能力增强升级到 1.12.0 或以上，再启用 Media 管理。** 旧版 QQ 插件仍会管理图片，无法与 Media 管理同时处理图片。
-
-1. 升级 QQ 插件，然后安装并启用 Media 管理。
-2. 保持 `general.import_qq_enhance=true`，首次启动会导入旧图片设置、长期归档和群缓存。
-3. 后续在 Media 管理中独立调整图片配置。QQ 保留的 `qq_media.inspect` / `inspect_animation` 会兼容转发到本插件，新引用使用 `media_inspect`。
-
-QQ 的语义、防抖和其他 QQ 工具可独立运行；Media 管理未启用时，旧图片查看入口会明确返回能力不可用。
-
-已有归档和仍有效的群缓存会自动补充动静态信息，保留原引用与有效期。新生成的引用包含检测结果，已保存的历史标签不批量改写。
-
-<details>
-<summary>迁移的数据、配置优先级与失败重试</summary>
-
-旧数据来自 `data/plugin_data/astrbot_plugin_qq_enhance/`。迁移会保留原始引用、平台与会话绑定、创建及过期时间，复制文件并更新新索引中的路径。**源数据库和源文件保留用于回退。**
-
-首次配置导入时，Media 管理已经设置的非默认值优先；其余继承旧图片配置。设置 `general.import_qq_enhance=false` 可跳过配置与数据导入。
-
-成功导入会记录完成标识，后续重载不会重新导入已被清理的图片。迁移失败时，修复原因后重载即可重试；已缺失的源文件会计入日志，不生成虚假的可用引用。旧 `QQ ImageRef` 和 QQ 合并标签中的引用继续支持回看与历史存活检查。
-
-</details>
+与 [QQ 能力增强](https://github.com/rytte/astrbot_plugin_qq_enhance) 一起启用时，两个插件通过相同的 `image_id=pic_…` 将 QQ 图片语义与媒体引用关联到同一次图片出现，模型应合并理解。`image_id` 仅用于关联，查看原图或动画预览仍使用 `media_inspect` 和真实的 `image_ref`；未启用 QQ 插件时，媒体引用可独立使用。
 
 <a id="configuration"></a>
 
@@ -137,7 +100,6 @@ QQ 的语义、防抖和其他 QQ 工具可独立运行；Media 管理未启用�
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `general.platform_ids` | `[]` | 适用的平台实例 ID；空列表表示全部 |
-| `general.import_qq_enhance` | `true` | 首次导入 QQ 能力增强的旧图片配置和数据 |
 
 ### 对话图片轻量化与归档
 

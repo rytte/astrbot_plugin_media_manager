@@ -452,39 +452,24 @@ def test_schema_defaults_are_loadable_by_astrbot():
     assert validate_config(defaults) == DEFAULT_CONFIG
 
 
-class SavedConfig(dict):
-    def save_config(self):
-        self.saves = getattr(self, "saves", 0) + 1
-
-
 @pytest.mark.asyncio
-async def test_real_initialization_imports_settings_once_and_stops_cleanup(
+async def test_real_initialization_preserves_settings_and_stops_cleanup(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
         "astrbot_plugin_media_manager.main.get_astrbot_plugin_data_path",
         lambda: str(tmp_path / "data"),
     )
-    monkeypatch.setattr(
-        "astrbot_plugin_media_manager.main.get_astrbot_config_path",
-        lambda: str(tmp_path),
+    context = SimpleNamespace(
+        conversation_manager=SimpleNamespace(get_conversation=AsyncMock())
     )
-    legacy = tmp_path / "astrbot_plugin_qq_enhance_config.json"
-    legacy.write_text(
-        json.dumps(
-            {
-                "context_images": {
-                    "retention_days": 7,
-                    "group_cache_enabled": False,
-                    "max_storage_mb": 512,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    context = SimpleNamespace(get_registered_star=lambda _: None)
-    config = SavedConfig(
-        group_config({"max_storage_mb": 128, "image_lighten_enabled": False})
+    config = group_config(
+        {
+            "retention_days": 7,
+            "max_storage_mb": 128,
+            "group_cache_enabled": False,
+            "image_lighten_enabled": False,
+        }
     )
     plugin = MediaManagerPlugin(context, config)
     try:
@@ -496,52 +481,16 @@ async def test_real_initialization_imports_settings_once_and_stops_cleanup(
         assert not plugin.config["image_lighten_enabled"]
         assert not plugin.images.archive_enabled
         assert config == group_config(plugin.config)
-        assert config.saves == 1
         await asyncio.sleep(0)
     finally:
         await plugin.terminate()
     assert not plugin.ready
     assert plugin.cleanup_task.done()
-    legacy.write_text(
-        json.dumps({"context_images": {"retention_days": 2}}), encoding="utf-8"
-    )
-    config["lightening"]["retention_days"] = (
-        30  # A later explicit reset to default must remain intact.
-    )
+    config["lightening"]["retention_days"] = 30
     reloaded = MediaManagerPlugin(context, config)
     try:
         await reloaded.initialize()
         assert reloaded.config["retention_days"] == 30
-        assert config.saves == 1
+        assert reloaded.config["max_storage_mb"] == 128
     finally:
         await reloaded.terminate()
-
-
-@pytest.mark.asyncio
-async def test_initialization_rejects_legacy_qq_image_owner(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "astrbot_plugin_media_manager.main.get_astrbot_plugin_data_path",
-        lambda: str(tmp_path),
-    )
-    context = SimpleNamespace(
-        get_registered_star=lambda _: SimpleNamespace(
-            activated=True, star_cls_type=type("OldQQ", (), {})
-        )
-    )
-    plugin = MediaManagerPlugin(context, SavedConfig())
-    with pytest.raises(RuntimeError, match="1.12.0"):
-        await plugin.initialize()
-    assert not plugin.ready
-    assert not plugin.storage.database_path.exists()
-    await plugin.terminate()
-
-
-@pytest.mark.asyncio
-async def test_late_legacy_qq_load_is_detected_independently_of_load_order(tmp_path):
-    plugin, _ = await make_plugin(tmp_path)
-    assert plugin.accepts(Event())
-    legacy = SimpleNamespace(activated=True, star_cls_type=type("OldQQ", (), {}))
-    plugin.context.get_registered_star = lambda _: legacy
-    assert not plugin.accepts(Event())
-    legacy.star_cls_type = type("NewQQ", (), {"media_manager_bridge_version": 1})
-    assert plugin.accepts(Event())

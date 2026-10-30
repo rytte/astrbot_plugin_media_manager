@@ -19,7 +19,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_data_path,
 )
 
-from .config import DEFAULT_CONFIG, group_config, migrate_config_file, validate_config
+from .config import migrate_config_file, validate_config
 from .context_images import (
     CONVERSATION_ID_EXTRA,
     IMAGE_REF_PATTERN,
@@ -28,7 +28,6 @@ from .context_images import (
 )
 from .group_image_cache import GROUP_IMAGES_EXTRA, GroupImageCache
 from .image_links import ensure_image_links, image_occurrences
-from .migration import import_legacy_images, legacy_settings
 from .storage import Storage
 
 PLUGIN_NAME = "astrbot_plugin_media_manager"
@@ -48,11 +47,8 @@ MEDIA_PROMPT = """Media 管理为图片添加独立的 [Media ImageRef ...] 引�
 class MediaManagerPlugin(Star):
     """Archive and inspect conversation media independently of platform tools."""
 
-    media_manager_api_version = 1
-
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self.raw_config = config
         self.config = validate_config(config)
         self.data_dir = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
         self.storage = Storage(self.data_dir / "media_manager.sqlite3")
@@ -62,10 +58,7 @@ class MediaManagerPlugin(Star):
         self._last_cleanup_day = None
 
     async def initialize(self):
-        self._check_legacy_owner()
         await self.storage.initialize()
-        if self.config["import_qq_enhance"]:
-            await self._import_settings_once()
         cfg = self.config
         cache = GroupImageCache(
             self.data_dir / "group_image_cache",
@@ -85,54 +78,10 @@ class MediaManagerPlugin(Star):
             archive_enabled=cfg["image_lighten_enabled"],
         )
         self.images.disabled_views = set(cfg["disabled_views"])
-        if cfg["import_qq_enhance"]:
-            await import_legacy_images(
-                self.storage,
-                self.images.root,
-                cache,
-                Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance",
-            )
         await self.storage.backfill_image_animation(self.images.root)
         self.ready = True
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info("Media 管理已初始化")
-
-    def _check_legacy_owner(self):
-        getter = getattr(self.context, "get_registered_star", None)
-        star = getter("astrbot_plugin_qq_enhance") if callable(getter) else None
-        if star and star.activated:
-            cls = getattr(star, "star_cls_type", None) or type(
-                getattr(star, "star_cls", None)
-            )
-            if getattr(cls, "media_manager_bridge_version", 0) < 1:
-                raise RuntimeError(
-                    "请先将 QQ 能力增强升级至 1.12.0 或以上，再启用 Media 管理，避免重复归档和清理"
-                )
-
-    async def _import_settings_once(self):
-        """Carry legacy preferences once; later media settings remain independent."""
-        marker = self.data_dir / "legacy_settings_v1.json"
-        if marker.exists():
-            return
-        path = Path(get_astrbot_config_path()) / "astrbot_plugin_qq_enhance_config.json"
-        settings = legacy_settings(path)
-        if not settings:
-            return
-        # Explicit non-default media settings win during the first import.
-        imported = {
-            key: value
-            for key, value in settings.items()
-            if self.config[key] == DEFAULT_CONFIG[key]
-        }
-        updated = validate_config({**self.config, **imported})
-        self.raw_config.clear()
-        self.raw_config.update(group_config(updated))
-        self.raw_config.save_config()
-        self.config = updated
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(
-            json.dumps(imported, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
 
     def accepts(self, event):
         accepted = self.ready and (
@@ -143,15 +92,6 @@ class MediaManagerPlugin(Star):
             return False
         if not self.config["image_lighten_enabled"] and event.is_private_chat():
             return False
-        # Also check at runtime: QQ may be loaded or downgraded after this plugin.
-        try:
-            self._check_legacy_owner()
-        except RuntimeError as exc:
-            if not getattr(self, "_legacy_warning_logged", False):
-                logger.error("Media 管理暂停图片处理：%s", str(exc))
-                self._legacy_warning_logged = True
-            return False
-        self._legacy_warning_logged = False
         return True
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1100)
@@ -253,7 +193,7 @@ class MediaManagerPlugin(Star):
             logger.warning("Media 管理结束归档失败，保留未归档图片数据：%s", exc.code)
 
     async def inspect_reference(self, event, image_ref, view="original"):
-        """Public v1 entry point also used by QQ's temporary legacy tool bridge."""
+        """Validate access and load a reference for the media_inspect tool."""
         if not self.accepts(event):
             raise ContextImageError(
                 "capability_unavailable", "当前会话未启用 Media 管理"
